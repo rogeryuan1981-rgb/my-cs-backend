@@ -69,8 +69,8 @@ async function processOverdueTickets(isManual = false) {
       // 排除邏輯刪除的案件
       if (data.isDeleted) return; 
 
-      // 【關鍵修改】檢查今天是否已經通知過，避免同一天內手動狂按重複發送
-      if (data.notifiedOverdue && data.notifiedAt) {
+      // 【關鍵修改】如果是「自動排程」，才檢查今天是否已經通知過。若是「手動觸發」，則強制無視標記發送！
+      if (!isManual && data.notifiedOverdue && data.notifiedAt) {
         const notifiedDateMs = new Date(data.notifiedAt).getTime();
         const notifiedDateString = new Date(notifiedDateMs + 8 * 60 * 60 * 1000).toISOString().slice(0, 10);
         
@@ -124,7 +124,7 @@ async function processOverdueTickets(isManual = false) {
       const lineUserId = userMap[targetUser];
 
       if (lineUserId) {
-        let message = `⚠️ 【每日逾期案件總覽】\n早安！您目前有 ${tickets.length} 件超過 ${overdueHours} 小時未結案的紀錄：\n\n`;
+        let message = `⚠️ 【每日逾期案件總覽】\n${isManual ? '管理員提醒！' : '早安！'}您目前有 ${tickets.length} 件超過 ${overdueHours} 小時未結案的紀錄：\n\n`;
         
         tickets.forEach((t, index) => {
           message += `${index + 1}. [${t.ticketId || t.id.slice(0,8)}] ${t.instName}\n   進度：${t.progress}\n`;
