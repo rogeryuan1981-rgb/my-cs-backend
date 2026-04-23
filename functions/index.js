@@ -19,15 +19,14 @@ function calculateWorkingHours(startMs, endMs) {
   let weekendMs = 0;
   
   let cur = new Date(startMs);
-  cur.setHours(0, 0, 0, 0); // 取起始日的凌晨 00:00
+  cur.setHours(0, 0, 0, 0); 
   
   let endDay = new Date(endMs);
-  endDay.setHours(0, 0, 0, 0); // 取結束日的凌晨 00:00
+  endDay.setHours(0, 0, 0, 0); 
   
-  // 逐日檢查是否為六日，若是則扣除該日涵蓋的毫秒數
   while (cur.getTime() <= endDay.getTime()) {
     let day = cur.getDay();
-    if (day === 0 || day === 6) { // 0=星期日, 6=星期六
+    if (day === 0 || day === 6) { 
       let startOfDay = cur.getTime();
       let endOfDay = startOfDay + 24 * 60 * 60 * 1000;
       let overlapStart = Math.max(startOfDay, startMs);
@@ -36,10 +35,9 @@ function calculateWorkingHours(startMs, endMs) {
         weekendMs += (overlapEnd - overlapStart);
       }
     }
-    cur.setDate(cur.getDate() + 1); // 推進到下一天
+    cur.setDate(cur.getDate() + 1); 
   }
   
-  // 回傳扣除六日後的真實工作小時數
   return (totalMs - weekendMs) / (1000 * 60 * 60);
 }
 
@@ -48,45 +46,53 @@ function calculateWorkingHours(startMs, endMs) {
  */
 async function processOverdueTickets(isManual = false) {
   try {
-    console.log(`開始執行【每日整合版 (扣除週末)】逾期案件檢查排程... (手動觸發: ${isManual})`);
+    console.log(`開始執行【每日整合版 (每日重複提醒)】逾期案件檢查排程... (手動觸發: ${isManual})`);
 
-    // 1. 取得全域逾期時數設定 (如果沒設定則預設 24 小時)
     const settingsDoc = await db.collection("cs_settings").doc("dropdowns").get();
     const overdueHours = settingsDoc.exists && settingsDoc.data().overdueHours 
       ? settingsDoc.data().overdueHours 
       : 24;
 
-    // 2. 取得所有尚未結案的案件
     const recordsSnapshot = await db.collection("cs_records")
       .where("progress", "!=", "結案")
       .get();
 
     const now = new Date().getTime();
+    // 取得台灣時間的「今天日期」(YYYY-MM-DD)
+    const todayString = new Date(now + 8 * 60 * 60 * 1000).toISOString().slice(0, 10);
+    
     const overdueTickets = [];
 
     recordsSnapshot.forEach((doc) => {
       const data = doc.data();
       
-      // 排除邏輯刪除的案件與已通知過的案件
-      if (data.isDeleted || data.notifiedOverdue) return; 
+      // 排除邏輯刪除的案件
+      if (data.isDeleted) return; 
+
+      // 【關鍵修改】檢查今天是否已經通知過，避免同一天內手動狂按重複發送
+      if (data.notifiedOverdue && data.notifiedAt) {
+        const notifiedDateMs = new Date(data.notifiedAt).getTime();
+        const notifiedDateString = new Date(notifiedDateMs + 8 * 60 * 60 * 1000).toISOString().slice(0, 10);
+        
+        // 如果最後通知的日期就是「今天」，則跳過（代表明天就會放行）
+        if (notifiedDateString === todayString) {
+          return; 
+        }
+      }
 
       const receiveTime = new Date(data.receiveTime).getTime();
-      
-      // 使用智慧函式：計算扣除六日後的經過時數
       const workingDiffHours = calculateWorkingHours(receiveTime, now);
 
-      // 判斷是否超過設定的逾期時數
       if (workingDiffHours > overdueHours) {
         overdueTickets.push({ id: doc.id, ref: doc.ref, ...data });
       }
     });
 
     if (overdueTickets.length === 0) {
-      console.log("目前無新增的逾期案件。");
+      console.log("目前無需要通知的逾期案件。");
       return { userNotifiedCount: 0, totalTicketsMarked: 0 };
     }
 
-    // 3. 取得所有使用者的 LINE UID 對照表
     const usersSnapshot = await db.collection("cs_users").get();
     const userMap = {};
     usersSnapshot.forEach(doc => {
@@ -101,10 +107,8 @@ async function processOverdueTickets(isManual = false) {
       return { userNotifiedCount: 0, totalTicketsMarked: 0 };
     }
 
-    // 4. 將逾期案件「依照負責人」進行分組
     const ticketsByUser = {};
     for (const ticket of overdueTickets) {
-      // 若有指定處理人則通知處理人，否則通知建檔人
       const targetUser = ticket.assignee || ticket.receiver;
       if (!ticketsByUser[targetUser]) {
         ticketsByUser[targetUser] = [];
@@ -112,7 +116,6 @@ async function processOverdueTickets(isManual = false) {
       ticketsByUser[targetUser].push(ticket);
     }
 
-    // 5. 針對每位負責人，發送一則整合後的清單訊息
     const batch = db.batch();
     let userNotifiedCount = 0;
     let totalTicketsMarked = 0;
@@ -121,7 +124,6 @@ async function processOverdueTickets(isManual = false) {
       const lineUserId = userMap[targetUser];
 
       if (lineUserId) {
-        // 組合通知內容
         let message = `⚠️ 【每日逾期案件總覽】\n早安！您目前有 ${tickets.length} 件超過 ${overdueHours} 小時未結案的紀錄：\n\n`;
         
         tickets.forEach((t, index) => {
@@ -131,7 +133,6 @@ async function processOverdueTickets(isManual = false) {
         message += `\n請盡速登入系統處理，謝謝！`;
 
         try {
-          // 呼叫 LINE API 發送整合後的訊息
           await axios.post('https://api.line.me/v2/bot/message/push', {
             to: lineUserId,
             messages: [{ type: 'text', text: message }]
@@ -142,7 +143,7 @@ async function processOverdueTickets(isManual = false) {
             }
           });
 
-          // 發送成功後，將該負責人的所有相關案件標記為已通知
+          // 發送成功後，更新最後通知時間為現在
           for (const t of tickets) {
             batch.update(t.ref, { 
               notifiedOverdue: true, 
@@ -158,7 +159,6 @@ async function processOverdueTickets(isManual = false) {
       }
     }
 
-    // 6. 提交 Firestore 狀態更新
     if (totalTicketsMarked > 0) {
       await batch.commit();
       console.log(`成功發送給 ${userNotifiedCount} 位同仁，並標記了 ${totalTicketsMarked} 筆逾期案件。`);
@@ -191,7 +191,6 @@ exports.checkOverdueTickets = onSchedule({
 exports.manualTriggerOverdue = onCall({
   cors: true
 }, async (request) => {
-  // 安全檢查：確認使用者是否已登入
   if (!request.auth) {
     throw new HttpsError('unauthenticated', '必須登入才能執行此操作');
   }
