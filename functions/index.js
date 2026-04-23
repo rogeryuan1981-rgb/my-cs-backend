@@ -1,4 +1,5 @@
 const { onSchedule } = require("firebase-functions/v2/scheduler");
+const { onCall, HttpsError } = require("firebase-functions/v2/https");
 const admin = require("firebase-admin");
 const axios = require("axios");
 
@@ -43,15 +44,11 @@ function calculateWorkingHours(startMs, endMs) {
 }
 
 /**
- * 每日逾期案件整合檢查排程 (排除六日)
- * 設定為：台灣時間【每週一到週五】早上 09:00 執行一次 (Cron: "0 9 * * 1-5")
+ * 核心邏輯：處理逾期案件並發送通知
  */
-exports.checkOverdueTickets = onSchedule({
-  schedule: "0 9 * * 1-5",
-  timeZone: "Asia/Taipei"
-}, async (event) => {
+async function processOverdueTickets(isManual = false) {
   try {
-    console.log("開始執行【每日整合版 (扣除週末)】逾期案件檢查排程...");
+    console.log(`開始執行【每日整合版 (扣除週末)】逾期案件檢查排程... (手動觸發: ${isManual})`);
 
     // 1. 取得全域逾期時數設定 (如果沒設定則預設 24 小時)
     const settingsDoc = await db.collection("cs_settings").doc("dropdowns").get();
@@ -86,7 +83,7 @@ exports.checkOverdueTickets = onSchedule({
 
     if (overdueTickets.length === 0) {
       console.log("目前無新增的逾期案件。");
-      return;
+      return { userNotifiedCount: 0, totalTicketsMarked: 0 };
     }
 
     // 3. 取得所有使用者的 LINE UID 對照表
@@ -101,7 +98,7 @@ exports.checkOverdueTickets = onSchedule({
 
     if (!LINE_ACCESS_TOKEN) {
       console.error("尚未設定 LINE_ACCESS_TOKEN，無法發送訊息。");
-      return;
+      return { userNotifiedCount: 0, totalTicketsMarked: 0 };
     }
 
     // 4. 將逾期案件「依照負責人」進行分組
@@ -169,7 +166,45 @@ exports.checkOverdueTickets = onSchedule({
       console.log("逾期案件的負責人皆未綁定 LINE UID，略過發送。");
     }
 
+    return { userNotifiedCount, totalTicketsMarked };
+
   } catch (error) {
-    console.error("執行排程發生嚴重錯誤:", error);
+    console.error("執行核心排程發生嚴重錯誤:", error);
+    throw error;
+  }
+}
+
+/**
+ * 每日逾期案件整合檢查排程 (排除六日)
+ * 設定為：台灣時間【每週一到週五】早上 09:00 執行一次 (Cron: "0 9 * * 1-5")
+ */
+exports.checkOverdueTickets = onSchedule({
+  schedule: "0 9 * * 1-5",
+  timeZone: "Asia/Taipei"
+}, async (event) => {
+  await processOverdueTickets(false);
+});
+
+/**
+ * 供前端網頁「強制觸發」的手動執行函式
+ */
+exports.manualTriggerOverdue = onCall({
+  cors: true
+}, async (request) => {
+  // 安全檢查：確認使用者是否已登入
+  if (!request.auth) {
+    throw new HttpsError('unauthenticated', '必須登入才能執行此操作');
+  }
+  
+  try {
+    const result = await processOverdueTickets(true);
+    return { 
+      success: true, 
+      notifiedCount: result.userNotifiedCount, 
+      markedCount: result.totalTicketsMarked 
+    };
+  } catch (error) {
+    console.error("手動觸發發生錯誤:", error);
+    throw new HttpsError('internal', '執行強制觸發時發生錯誤');
   }
 });
