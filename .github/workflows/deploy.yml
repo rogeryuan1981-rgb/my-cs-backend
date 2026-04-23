@@ -15,7 +15,7 @@ jobs:
       - name: Setup Node.js
         uses: actions/setup-node@v4
         with:
-          node-version: '18'
+          node-version: '20'
 
       # 將 GitHub Secrets 裡的 LINE Token 寫入給 Functions 讀取
       - name: Create .env file for Secrets
@@ -26,10 +26,10 @@ jobs:
         working-directory: ./functions
         run: npm install
 
-      # 透過第三方套件自動部署到 Firebase
+      # 透過第三方套件自動部署到 Firebase (加入 --force 參數)
       - name: Deploy to Firebase Functions
         uses: w9jds/firebase-action@master
         with:
-          args: deploy --only functions
+          args: deploy --only functions --force
         env:
           GCP_SA_KEY: ${{ secrets.FIREBASE_SERVICE_ACCOUNT }}
