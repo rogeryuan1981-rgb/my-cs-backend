@@ -1,0 +1,35 @@
+name: Deploy to Firebase Functions
+
+on:
+  push:
+    branches:
+      - main # 只要 main 分支有更新就會自動觸發
+
+jobs:
+  build_and_deploy:
+    runs-on: ubuntu-latest
+    steps:
+      - name: Checkout Repo
+        uses: actions/checkout@v3
+
+      - name: Setup Node.js
+        uses: actions/setup-node@v3
+        with:
+          node-version: '18'
+
+      # 將 GitHub Secrets 裡的 LINE Token 寫入給 Functions 讀取
+      - name: Create .env file for Secrets
+        run: |
+          echo "LINE_ACCESS_TOKEN=${{ secrets.LINE_ACCESS_TOKEN }}" > functions/.env
+
+      - name: Install Dependencies
+        working-directory: ./functions
+        run: npm install
+
+      # 透過第三方套件自動部署到 Firebase
+      - name: Deploy to Firebase Functions
+        uses: w9jds/firebase-action@master
+        with:
+          args: deploy --only functions
+        env:
+          GCP_SA_KEY: ${{ secrets.FIREBASE_SERVICE_ACCOUNT }}
