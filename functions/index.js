@@ -115,7 +115,9 @@ async function processOverdueTickets(isManual = false) {
     const usersData = {}; // 存放完整用戶資訊 (包含代理人與 UID)
     usersSnapshot.forEach(doc => {
       const u = doc.data();
-      usersData[u.username] = u;
+      if (u.isDisabled !== true) {
+        usersData[u.username] = u;
+      }
     });
 
     if (!LINE_ACCESS_TOKEN) {
