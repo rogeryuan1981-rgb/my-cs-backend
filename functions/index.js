@@ -2,6 +2,8 @@ const { onSchedule } = require("firebase-functions/v2/scheduler");
 const { onCall, HttpsError } = require("firebase-functions/v2/https");
 const admin = require("firebase-admin");
 const axios = require("axios");
+const { queryRecords, reportRecords, authorize, ROLES } = require("./recordQueries");
+const { calculateWorkingHours, getTaipeiDateString, resolveNotificationTarget, wasNotifiedToday } = require("./overdue");
 
 // 初始化 Firebase Admin SDK
 admin.initializeApp();
@@ -9,45 +11,6 @@ const db = admin.firestore();
 
 // 從環境變數讀取 LINE Channel Access Token
 const LINE_ACCESS_TOKEN = process.env.LINE_ACCESS_TOKEN;
-
-/**
- * 輔助函式：計算兩個時間戳之間的「工作時數」（扣除星期六、日及國定假日）
- */
-function calculateWorkingHours(startMs, endMs, holidays = []) {
-  if (endMs <= startMs) return 0;
-  let totalMs = endMs - startMs;
-  let nonWorkingMs = 0;
-
-  // 轉換成台灣時間 (UTC+8) 的概念來迭代
-  let cur = new Date(startMs + 8 * 60 * 60 * 1000);
-  cur.setUTCHours(0, 0, 0, 0); 
-  
-  let endDay = new Date(endMs + 8 * 60 * 60 * 1000);
-  endDay.setUTCHours(0, 0, 0, 0); 
-  
-  while (cur.getTime() <= endDay.getTime()) {
-    let dayOfWeek = cur.getUTCDay(); // 0 是週日, 6 是週六
-    let dateString = cur.toISOString().slice(0, 10);
-    
-    let isWeekend = (dayOfWeek === 0 || dayOfWeek === 6);
-    let isHoliday = holidays.some(h => dateString >= h.start && dateString <= h.end);
-
-    if (isWeekend || isHoliday) { 
-      // 還原回實際的 UTC 毫秒來計算重疊時間
-      let startOfDayMs = cur.getTime() - 8 * 60 * 60 * 1000;
-      let endOfDayMs = startOfDayMs + 24 * 60 * 60 * 1000;
-      
-      let overlapStart = Math.max(startOfDayMs, startMs);
-      let overlapEnd = Math.min(endOfDayMs, endMs);
-      if (overlapEnd > overlapStart) {
-        nonWorkingMs += (overlapEnd - overlapStart);
-      }
-    }
-    cur.setUTCDate(cur.getUTCDate() + 1); 
-  }
-  
-  return (totalMs - nonWorkingMs) / (1000 * 60 * 60);
-}
 
 /**
  * 核心邏輯：處理逾期案件並發送通知
@@ -63,13 +26,9 @@ async function processOverdueTickets(isManual = false) {
     
     const holidays = settingsDoc.exists && settingsDoc.data().holidays ? settingsDoc.data().holidays : [];
 
-    const recordsSnapshot = await db.collection("cs_records")
-      .where("progress", "!=", "結案")
-      .get();
-
     const now = new Date().getTime();
     // 取得台灣時間的「今天日期」(YYYY-MM-DD)
-    const todayString = new Date(now + 8 * 60 * 60 * 1000).toISOString().slice(0, 10);
+    const todayString = getTaipeiDateString(now);
     
     // 【新增機制】檢查今天是否為國定假日 (若手動觸發則無視放假)
     const isTodayHoliday = holidays.some(h => todayString >= h.start && todayString <= h.end);
@@ -77,6 +36,13 @@ async function processOverdueTickets(isManual = false) {
        console.log("今天是設定的國定假日，自動排程暫停發送推播。");
        return { userNotifiedCount: 0, totalTicketsMarked: 0 };
     }
+
+    // 假日先短路，再讀取案件；select 只傳送逾期判斷與通知實際需要的欄位。
+    const recordsSnapshot = await db.collection("cs_records")
+      .where("progress", "!=", "結案")
+      .select("ticketId", "instName", "progress", "assignee", "receiver", "receiveTime", "isDeleted", "notifiedOverdue", "notifiedAt")
+      .get();
+    console.log(`逾期排程候選案件讀取 ${recordsSnapshot.size} 筆。`);
 
     const overdueTickets = [];
 
@@ -87,17 +53,13 @@ async function processOverdueTickets(isManual = false) {
       if (data.isDeleted) return; 
 
       // 如果是「自動排程」，才檢查今天是否已經通知過。若是「手動觸發」，則強制無視標記發送！
-      if (!isManual && data.notifiedOverdue && data.notifiedAt) {
-        const notifiedDateMs = new Date(data.notifiedAt).getTime();
-        const notifiedDateString = new Date(notifiedDateMs + 8 * 60 * 60 * 1000).toISOString().slice(0, 10);
-        
-        // 如果最後通知的日期就是「今天」，則跳過（代表明天就會放行）
-        if (notifiedDateString === todayString) {
-          return; 
-        }
-      }
+      if (!isManual && wasNotifiedToday(data, todayString)) return;
 
       const receiveTime = new Date(data.receiveTime).getTime();
+      if (!Number.isFinite(receiveTime)) {
+        console.warn(`案件 ${doc.id} 的 receiveTime 無效，已略過。`);
+        return;
+      }
       // 將設定的假日列表傳入計算
       const workingDiffHours = calculateWorkingHours(receiveTime, now, holidays);
 
@@ -111,7 +73,9 @@ async function processOverdueTickets(isManual = false) {
       return { userNotifiedCount: 0, totalTicketsMarked: 0 };
     }
 
-    const usersSnapshot = await db.collection("cs_users").get();
+    const usersSnapshot = await db.collection("cs_users")
+      .select("username", "isDisabled", "leaveStart", "leaveEnd", "delegateUser", "lineUserId")
+      .get();
     const usersData = {}; // 存放完整用戶資訊 (包含代理人與 UID)
     usersSnapshot.forEach(doc => {
       const u = doc.data();
@@ -127,24 +91,13 @@ async function processOverdueTickets(isManual = false) {
 
     const ticketsByUser = {};
     for (const ticket of overdueTickets) {
-      let targetUser = ticket.assignee || ticket.receiver;
-      let originalUser = targetUser;
-      let isDelegated = false;
-
-      // 判斷該負責人今日是否請假，若有則轉給代理人
-      const uInfo = usersData[targetUser];
-      if (uInfo && uInfo.leaveStart && uInfo.leaveEnd && uInfo.delegateUser) {
-         if (todayString >= uInfo.leaveStart && todayString <= uInfo.leaveEnd) {
-            targetUser = uInfo.delegateUser;
-            isDelegated = true;
-         }
-      }
+      const { targetUser, originalUser } = resolveNotificationTarget(ticket, usersData, todayString);
 
       if (!ticketsByUser[targetUser]) {
         ticketsByUser[targetUser] = [];
       }
       // 將代理資訊附加進去
-      ticketsByUser[targetUser].push({ ...ticket, originalUser: isDelegated ? originalUser : null });
+      ticketsByUser[targetUser].push({ ...ticket, originalUser });
     }
 
     const batch = db.batch();
@@ -224,9 +177,8 @@ exports.checkOverdueTickets = onSchedule({
 exports.manualTriggerOverdue = onCall({
   cors: true
 }, async (request) => {
-  if (!request.auth) {
-    throw new HttpsError('unauthenticated', '必須登入才能執行此操作');
-  }
+  const profile = await authorize(db, request);
+  if (profile.role !== ROLES.ADMIN) throw new HttpsError('permission-denied', '只有後台管理者可以手動發送逾期通知');
   
   try {
     const result = await processOverdueTickets(true);
@@ -239,4 +191,21 @@ exports.manualTriggerOverdue = onCall({
     console.error("手動觸發發生錯誤:", error);
     throw new HttpsError('internal', '執行強制觸發時發生錯誤');
   }
+});
+
+/**
+ * 清單用：預設條件走索引與 startAfter 游標；相容性搜尋只在使用者輸入搜尋、
+ * 結案日篩選或非預設排序時按需執行。
+ */
+exports.queryRecords = onCall({ cors: true }, async (request) => {
+  const result = await queryRecords(db, request);
+  console.log("queryRecords", { strategy: result.strategy, returned: result.records.length, totalCount: result.totalCount });
+  return result;
+});
+
+/** 統計與匯出用：只有開啟報表或按下匯出時才讀取完整指定範圍。 */
+exports.reportRecords = onCall({ cors: true, timeoutSeconds: 120, memory: "512MiB" }, async (request) => {
+  const result = await reportRecords(db, request);
+  console.log("reportRecords", { strategy: result.strategy, returned: result.records.length, hasMore: Boolean(result.reportCursor) });
+  return result;
 });

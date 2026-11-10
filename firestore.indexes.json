@@ -1,0 +1,69 @@
+{
+  "indexes": [
+    {
+      "collectionGroup": "cs_records",
+      "queryScope": "COLLECTION",
+      "fields": [
+        { "fieldPath": "progress", "order": "ASCENDING" },
+        { "fieldPath": "receiveTime", "order": "DESCENDING" },
+        { "fieldPath": "__name__", "order": "DESCENDING" }
+      ]
+    },
+    {
+      "collectionGroup": "cs_records",
+      "queryScope": "COLLECTION",
+      "fields": [
+        { "fieldPath": "progress", "order": "ASCENDING" },
+        { "fieldPath": "receiveTime", "order": "ASCENDING" },
+        { "fieldPath": "__name__", "order": "ASCENDING" }
+      ]
+    },
+    {
+      "collectionGroup": "cs_records",
+      "queryScope": "COLLECTION",
+      "fields": [
+        { "fieldPath": "isDeleted", "order": "ASCENDING" },
+        { "fieldPath": "receiveTime", "order": "DESCENDING" },
+        { "fieldPath": "__name__", "order": "DESCENDING" }
+      ]
+    },
+    {
+      "collectionGroup": "cs_records",
+      "queryScope": "COLLECTION",
+      "fields": [
+        { "fieldPath": "isDeleted", "order": "ASCENDING" },
+        { "fieldPath": "receiveTime", "order": "ASCENDING" },
+        { "fieldPath": "__name__", "order": "ASCENDING" }
+      ]
+    },
+    {
+      "collectionGroup": "cs_records",
+      "queryScope": "COLLECTION",
+      "fields": [
+        { "fieldPath": "isDeleted", "order": "ASCENDING" },
+        { "fieldPath": "progress", "order": "ASCENDING" },
+        { "fieldPath": "receiveTime", "order": "DESCENDING" },
+        { "fieldPath": "__name__", "order": "DESCENDING" }
+      ]
+    },
+    {
+      "collectionGroup": "cs_records",
+      "queryScope": "COLLECTION",
+      "fields": [
+        { "fieldPath": "isDeleted", "order": "ASCENDING" },
+        { "fieldPath": "progress", "order": "ASCENDING" },
+        { "fieldPath": "receiveTime", "order": "ASCENDING" },
+        { "fieldPath": "__name__", "order": "ASCENDING" }
+      ]
+    },
+    {
+      "collectionGroup": "cs_records",
+      "queryScope": "COLLECTION",
+      "fields": [
+        { "fieldPath": "progress", "order": "ASCENDING" },
+        { "fieldPath": "instCode", "order": "ASCENDING" }
+      ]
+    }
+  ],
+  "fieldOverrides": []
+}
